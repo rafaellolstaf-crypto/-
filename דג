@@ -1,0 +1,171 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+from datetime import datetime, time
+import io
+import os
+
+# הגדרות דף ועיצוב (RTL support via Markdown if needed)
+st.set_page_config(page_title="ניהול עסק חכם", layout="wide")
+
+# יצירת תיקייה לשמירת קבלות אם לא קיימת
+RECEIPTS_DIR = "receipts"
+if not os.path.exists(RECEIPTS_DIR):
+    os.makedirs(RECEIPTS_DIR)
+
+# פונקציות עזר לניהול נתונים
+def load_data(file_name, columns):
+    if os.path.exists(file_name):
+        try:
+            return pd.read_csv(file_name)
+        except:
+            return pd.DataFrame(columns=columns)
+    return pd.DataFrame(columns=columns)
+
+def save_receipt(uploaded_file):
+    if uploaded_file is not None:
+        file_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uploaded_file.name}"
+        file_path = os.path.join(RECEIPTS_DIR, file_name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        return file_path
+    return ""
+
+# אתחול נתונים ב-Session State
+if 'incomes' not in st.session_state:
+    st.session_state.incomes = load_data('incomes.csv', ['תאריך', 'קטגוריה', 'תיאור', 'סכום', 'קבלות'])
+if 'expenses' not in st.session_state:
+    st.session_state.expenses = load_data('expenses.csv', ['תאריך', 'קטגוריה', 'תיאור', 'סכום', 'קבלות'])
+if 'calendar' not in st.session_state:
+    st.session_state.calendar = load_data('calendar.csv', ['תאריך', 'שעת התחלה', 'שעת סיום', 'יום שלם', 'תיאור'])
+
+# תפריט צדדי
+st.sidebar.title("🛠️ ניהול העסק שלי")
+menu = st.sidebar.radio("ניווט:", ["לוח בקרה (גרפים)", "הכנסות", "הוצאות", "לוח שנה עבודה", "ייצוא נתונים"])
+
+# --- לוח בקרה וגרפים ---
+if menu == "לוח בקרה (גרפים)":
+    st.header("📈 ניתוח ביצועים")
+    
+    # המרת עמודות למספרים ליתר ביטחון
+    st.session_state.incomes['סכום'] = pd.to_numeric(st.session_state.incomes['סכום'], errors='coerce').fillna(0)
+    st.session_state.expenses['סכום'] = pd.to_numeric(st.session_state.expenses['סכום'], errors='coerce').fillna(0)
+    
+    total_income = st.session_state.incomes['סכום'].sum()
+    total_expense = st.session_state.expenses['סכום'].sum()
+    profit = total_income - total_expense
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("סה-כ הכנסות", f"₪{total_income:,.2f}")
+    col2.metric("סה-כ הוצאות", f"₪{total_expense:,.2f}", delta=f"{-total_expense:,.2f}", delta_color="inverse")
+    col3.metric("רווח נקי", f"₪{profit:,.2f}", delta=f"{profit:,.2f}")
+
+    st.divider()
+
+    c1, c2 = st.columns(2)
+    
+    with c1:
+        if not st.session_state.incomes.empty:
+            st.subheader("פילוח הכנסות")
+            fig_inc = px.pie(st.session_state.incomes, values='סכום', names='קטגוריה', hole=0.4)
+            st.plotly_chart(fig_inc, use_container_width=True)
+    
+    with c2:
+        if not st.session_state.expenses.empty:
+            st.subheader("פילוח הוצאות")
+            fig_exp = px.pie(st.session_state.expenses, values='סכום', names='קטגוריה', hole=0.4)
+            st.plotly_chart(fig_exp, use_container_width=True)
+
+# --- דף הכנסות ---
+elif menu == "הכנסות":
+    st.header("💰 ניהול הכנסות")
+    with st.expander("הוסף הכנסה חדשה"):
+        with st.form("income_form", clear_on_submit=True):
+            date = st.date_input("תאריך", datetime.now())
+            category = st.selectbox("סוג הכנסה", ["הובלה", "התקנה", "אחר"])
+            desc = st.text_input("תיאור")
+            amount = st.number_input("סכום (₪)", min_value=0.0)
+            receipt_file = st.file_uploader("צילום קבלה/חשבונית", type=['jpg', 'png', 'pdf'])
+            submit = st.form_submit_button("שמור נתונים")
+            
+            if submit:
+                file_path = save_receipt(receipt_file)
+                new_row = {"תאריך": str(date), "קטגוריה": category, "תיאור": desc, "סכום": amount, "קבלות": file_path}
+                st.session_state.incomes = pd.concat([st.session_state.incomes, pd.DataFrame([new_row])], ignore_index=True)
+                st.session_state.incomes.to_csv('incomes.csv', index=False)
+                st.success("הכנסה נשמרה בהצלחה!")
+
+    st.subheader("פירוט הכנסות")
+    st.dataframe(st.session_state.incomes, use_container_width=True)
+    if st.button("מחק את כל ההכנסות (זהירות!)"):
+        st.session_state.incomes = pd.DataFrame(columns=['תאריך', 'קטגוריה', 'תיאור', 'סכום', 'קבלות'])
+        st.session_state.incomes.to_csv('incomes.csv', index=False)
+        st.rerun()
+
+# --- דף הוצאות ---
+elif menu == "הוצאות":
+    st.header("💸 ניהול הוצאות")
+    with st.expander("הוסף הוצאה חדשה"):
+        with st.form("expense_form", clear_on_submit=True):
+            date = st.date_input("תאריך", datetime.now())
+            category = st.selectbox("סוג הוצאה", ["עובד", "דלק", "חלקי חילוף", "חומר", "שונות"])
+            desc = st.text_input("תיאור")
+            amount = st.number_input("סכום (₪)", min_value=0.0)
+            receipt_file = st.file_uploader("צילום קבלה", type=['jpg', 'png', 'pdf'])
+            submit = st.form_submit_button("שמור הוצאה")
+
+            if submit:
+                file_path = save_receipt(receipt_file)
+                new_row = {"תאריך": str(date), "קטגוריה": category, "תיאור": desc, "סכום": amount, "קבלות": file_path}
+                st.session_state.expenses = pd.concat([st.session_state.expenses, pd.DataFrame([new_row])], ignore_index=True)
+                st.session_state.expenses.to_csv('expenses.csv', index=False)
+                st.success("ההוצאה נרשמה!")
+
+    st.subheader("פירוט הוצאות")
+    st.dataframe(st.session_state.expenses, use_container_width=True)
+
+# --- לוח שנה ---
+elif menu == "לוח שנה עבודה":
+    st.header("📅 יומן עבודה")
+    
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        with st.form("cal_form"):
+            work_date = st.date_input("תאריך", datetime.now())
+            full_day = st.checkbox("יום שלם")
+            start_t = st.time_input("שעת התחלה", time(9, 0)) if not full_day else "00:00"
+            end_t = st.time_input("שעת סיום", time(17, 0)) if not full_day else "23:59"
+            work_desc = st.text_area("תיאור העבודה")
+            if st.form_submit_button("הוסף ליומן"):
+                new_work = {"תאריך": str(work_date), "שעת התחלה": str(start_t), "שעת סיום": str(end_t), 
+                            "יום שלם": "כן" if full_day else "לא", "תיאור": work_desc}
+                st.session_state.calendar = pd.concat([st.session_state.calendar, pd.DataFrame([new_work])], ignore_index=True)
+                st.session_state.calendar.to_csv('calendar.csv', index=False)
+                st.success("העבודה נוספה")
+
+    with col2:
+        if not st.session_state.calendar.empty:
+            df_cal = st.session_state.calendar.sort_values(by="תאריך", ascending=False)
+            st.table(df_cal)
+
+# --- ייצוא ---
+elif menu == "ייצוא נתונים":
+    st.header("📥 הורדת נתונים")
+    st.write("כאן ניתן להוריד את כל המידע לקובץ אקסל מסודר לרואה החשבון.")
+    
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        st.session_state.incomes.to_excel(writer, sheet_name='הכנסות', index=False)
+        st.session_state.expenses.to_excel(writer, sheet_name='הוצאות', index=False)
+        st.session_state.calendar.to_excel(writer, sheet_name='לוח שנה', index=False)
+    
+    st.download_button(
+        label="📥 הורד דו''ח אקסל מלא",
+        data=buffer.getvalue(),
+        file_name=f"business_report_{datetime.now().strftime('%Y%m%d')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    st.divider()
+    st.subheader("📁 תיקיית קבלות")
+    st.info(f"הקבלות הפיזיות נשמרות בתיקייה: `{os.path.abspath(RECEIPTS_DIR)}`")
